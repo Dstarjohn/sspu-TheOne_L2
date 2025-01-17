@@ -466,8 +466,10 @@ class WeatherQuery(BaseAction):
 
 在`/root/agent_camp4/lagent/lagent/actions/__init__.py`中加入下面的代码，用以初始化`WeatherQuery`方法：
 
-```
+```shell
+# 千万不要漏掉这一句
 from .weather_query import WeatherQuery
+
 __all__ = [
     'BaseAction', 'ActionExecutor', 'AsyncActionExecutor', 'InvalidAction',
     'FinishAction', 'NoAction', 'BINGMap', 'AsyncBINGMap', 'ArxivSearch',
@@ -510,6 +512,10 @@ __all__ = [
 ![img](./image/27.png)
 
 ![img](./image/26.png)
+
+![img](./image/24-2.png)
+
+
 
 总结：主要是熟悉大模型通过调用不同的工具或者插件来处理不同的需求，感兴趣的小伙伴可以继续创建更多好玩的API上面继续使用。
 
@@ -758,6 +764,67 @@ if __name__ == '__main__':
 
 ![img](./image/33.png)
 
+部署至HuggingFace
+
+```shell
+# 先去hf上把几个API调用的环境变量设置好，token和weather_token，然后再去修改agent_api_web_demo.py和multi_agents_api_web_demo.py的对应脚本的位置，主要是注释掉streamlit的page页面的设置。
+# 然后把对应的requirements.txt准备好，hf上面找不到docker设置的requirements/optional.txt文件的，需要我们手动添加依赖如下。
+
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+termcolor==2.4.0
+streamlit==1.39.0
+class_registry==2.1.2
+datasets==3.1.0
+# -r requirements/optional.txt
+google-search-results
+lmdeploy>=0.2.5
+pillow
+python-pptx
+timeout_decorator
+torch
+transformers>=4.34,<=4.40
+vllm>=0.3.3
+# -r requirements/runtime.txt
+aiohttp
+arxiv
+asyncache
+asyncer
+distro
+duckduckgo_search==5.3.1b1
+filelock
+func_timeout
+griffe<1.0
+json5
+jsonschema
+jupyter==1.0.0
+jupyter_client==8.6.2
+jupyter_core==5.7.2
+pydantic==2.6.4
+requests
+termcolor
+tiktoken
+timeout-decorator
+typing-extensions
+griffe==0.48.0
+# 然后开始上传
+git clone https://hf-mirror.com/spaces/dstars/lagent
+cd lagent
+rsync -av -o -t --exclude='.git*' --exclude='README.md' /root/agent_camp4/lagent/ /root/lagent/
+git add .
+git commit -m "Add files"
+git push
+```
+
+
+
+部署在huggingface后的截图如下：
+
+![img](./image/63.png)
+
+
+
 # L2G3000:LMDeploy 量化部署进阶实践
 
 这一章节，详细的操作流程请查看我之前的博客或者github，先送上地址[我的csdn](https://blog.csdn.net/weixin_44217506/article/details/141669335?spm=1001.2014.3001.5501)，希望小伙伴们多多指教，互相学习，带带小老弟~，也可以帮我互相关注下，谢谢大佬们！
@@ -886,11 +953,285 @@ lmdeploy serve api_client http://localhost:23333
 
 后续使用LMDeploy的过程，没有新的知识改变和扩充，所以请参考我之前的博客[LMDeploy量化部署进阶实验](https://blog.csdn.net/weixin_44217506/article/details/141669335?spm=1001.2014.3001.5501)，有任何疑问可以互相讨论。
 
-
-
 # L2G4000:InternVL 多模态模型部署微调实践
 
-直接开始动手哈，我会在比较重要的步骤中给出详细的解释说明，有不明白的可以参考之前的文章，也可以直接在群里问，谢谢理解~ 
+InternVL是一种能够执行复杂的跨模态任务的深度学习模型，结合了视觉ViT模块和llm模型，对于ViT模块，关键就在于Dynamic High Resolution，这是InternVL的预处理模块—动态高分辨率，主要目的是为了让ViT模型获取更细节的图像信息，提高视觉特征的表达能力，对于输入的图片，会先resize为448的倍数，然后按照预定义的尺寸比例从图片中裁剪对应的区域.
+
+![img](./image/56.png)
+
+像素重排（Pixel Shuffle）
+
+Pytorch中有官方实现，`nn.PixelShuffle（upscale_factor）`作用就是将一个tensor中的元素值进行重新排列，假设tensor维度为[B,C,H,W]，PixelShuffle不仅改变tensor通道数，也会改变特征图的大小。
+
+接下来完成InternVL来做一个冷笑话生成的复现，微调用xtuner，部署则用lmdeploy，直接开始运行代码
+
+```shell
+cd /root
+mkdir -p model
+# cp 模型
+cp -r /root/share/new_models/OpenGVLab/InternVL2-2B /root/model/
+conda create --name xtuner python=3.10 -y
+# 激活虚拟环境（注意：后续的所有操作都需要在这个虚拟环境中进行）
+conda activate xtuner
+# 安装一些必要的库
+conda install pytorch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+# 安装其他依赖
+apt install libaio-dev
+pip install transformers==4.39.3
+pip install streamlit==1.36.0
+# 创建一个目录，用来存放源代码
+mkdir -p /root/InternLM/code
+cd /root/InternLM/code
+git clone -b v0.1.23  https://github.com/InternLM/XTuner
+cd /root/InternLM/code/XTuner
+pip install -e '.[deepspeed]'
+pip install lmdeploy==0.5.3
+xtuner version
+##命令
+xtuner help
+## 首先让我们安装一下需要的包
+pip install datasets matplotlib Pillow timm
+## 让我们把数据集挪出来
+cp -r /root/share/new_models/datasets/CLoT_cn_2000 /root/InternLM/datasets/
+# 挪动第一张看看，注意上面cp复制得时候并没有复制到教程路径中的“/CLoT_cn_2000”这个目录
+cp /root/InternLM/datasets/ex_images/007aPnLRgy1hb39z0im50j30ci0el0wm.jpg InternLM/
+```
+
+
+
+![img](./image/60.png)
+
+开始使用lmdeploy推理
+
+```shell
+touch /root/InternLM/code/test_lmdeploy.py
+cd /root/InternLM/code/
+# test_lmdeploy.py的内容
+from lmdeploy import pipeline
+from lmdeploy.vl import load_image
+
+pipe = pipeline('/root/model/InternVL2-2B')
+
+image = load_image('/root/InternLM/007aPnLRgy1hb39z0im50j30ci0el0wm.jpg')
+response = pipe(('请你根据这张图片，讲一个脑洞大开的梗', image))
+print(response.text)
+# 运行推理脚本
+python3 test_lmdeploy.py
+```
+
+
+
+微调：
+
+```python
+# Copyright (c) OpenMMLab. All rights reserved.
+from mmengine.hooks import (CheckpointHook, DistSamplerSeedHook, IterTimerHook,
+                            LoggerHook, ParamSchedulerHook)
+from mmengine.optim import AmpOptimWrapper, CosineAnnealingLR, LinearLR
+from peft import LoraConfig
+from torch.optim import AdamW
+from transformers import AutoTokenizer
+
+from xtuner.dataset import InternVL_V1_5_Dataset
+from xtuner.dataset.collate_fns import default_collate_fn
+from xtuner.dataset.samplers import LengthGroupedSampler
+from xtuner.engine.hooks import DatasetInfoHook
+from xtuner.engine.runner import TrainLoop
+from xtuner.model import InternVL_V1_5
+from xtuner.utils import PROMPT_TEMPLATE
+
+#######################################################################
+#                          PART 1  Settings                           #
+#######################################################################
+# Model
+path = '/root/model/InternVL2-2B'
+
+# Data
+data_root = '/root/InternLM/datasets/'
+data_path = data_root + 'ex_cn.json'
+image_folder = data_root
+prompt_template = PROMPT_TEMPLATE.internlm2_chat
+max_length = 6656
+
+# Scheduler & Optimizer
+batch_size = 4  # per_device
+accumulative_counts = 4
+dataloader_num_workers = 4
+max_epochs = 10
+optim_type = AdamW
+# official 1024 -> 4e-5
+lr = 2e-5
+betas = (0.9, 0.999)
+weight_decay = 0.05
+max_norm = 1  # grad clip
+warmup_ratio = 0.03
+
+# Save
+save_steps = 1000
+save_total_limit = 1  # Maximum checkpoints to keep (-1 means unlimited)
+
+#######################################################################
+#            PART 2  Model & Tokenizer & Image Processor              #
+#######################################################################
+model = dict(
+    type=InternVL_V1_5,
+    model_path=path,
+    freeze_llm=True,
+    freeze_visual_encoder=True,
+    quantization_llm=True,  # or False
+    quantization_vit=False,  # or True and uncomment visual_encoder_lora
+    # comment the following lines if you don't want to use Lora in llm
+    llm_lora=dict(
+        type=LoraConfig,
+        r=128,
+        lora_alpha=256,
+        lora_dropout=0.05,
+        target_modules=None,
+        task_type='CAUSAL_LM'),
+    # uncomment the following lines if you don't want to use Lora in visual encoder # noqa
+    # visual_encoder_lora=dict(
+    #     type=LoraConfig, r=64, lora_alpha=16, lora_dropout=0.05,
+    #     target_modules=['attn.qkv', 'attn.proj', 'mlp.fc1', 'mlp.fc2'])
+)
+
+#######################################################################
+#                      PART 3  Dataset & Dataloader                   #
+#######################################################################
+llava_dataset = dict(
+    type=InternVL_V1_5_Dataset,
+    model_path=path,
+    data_paths=data_path,
+    image_folders=image_folder,
+    template=prompt_template,
+    max_length=max_length)
+
+train_dataloader = dict(
+    batch_size=batch_size,
+    num_workers=dataloader_num_workers,
+    dataset=llava_dataset,
+    sampler=dict(
+        type=LengthGroupedSampler,
+        length_property='modality_length',
+        per_device_batch_size=batch_size * accumulative_counts),
+    collate_fn=dict(type=default_collate_fn))
+
+#######################################################################
+#                    PART 4  Scheduler & Optimizer                    #
+#######################################################################
+# optimizer
+optim_wrapper = dict(
+    type=AmpOptimWrapper,
+    optimizer=dict(
+        type=optim_type, lr=lr, betas=betas, weight_decay=weight_decay),
+    clip_grad=dict(max_norm=max_norm, error_if_nonfinite=False),
+    accumulative_counts=accumulative_counts,
+    loss_scale='dynamic',
+    dtype='float16')
+
+# learning policy
+# More information: https://github.com/open-mmlab/mmengine/blob/main/docs/en/tutorials/param_scheduler.md  # noqa: E501
+param_scheduler = [
+    dict(
+        type=LinearLR,
+        start_factor=1e-5,
+        by_epoch=True,
+        begin=0,
+        end=warmup_ratio * max_epochs,
+        convert_to_iter_based=True),
+    dict(
+        type=CosineAnnealingLR,
+        eta_min=0.0,
+        by_epoch=True,
+        begin=warmup_ratio * max_epochs,
+        end=max_epochs,
+        convert_to_iter_based=True)
+]
+
+# train, val, test setting
+train_cfg = dict(type=TrainLoop, max_epochs=max_epochs)
+
+#######################################################################
+#                           PART 5  Runtime                           #
+#######################################################################
+# Log the dialogue periodically during the training process, optional
+tokenizer = dict(
+    type=AutoTokenizer.from_pretrained,
+    pretrained_model_name_or_path=path,
+    trust_remote_code=True)
+
+custom_hooks = [
+    dict(type=DatasetInfoHook, tokenizer=tokenizer),
+]
+
+# configure default hooks
+default_hooks = dict(
+    # record the time of every iteration.
+    timer=dict(type=IterTimerHook),
+    # print log every 10 iterations.
+    logger=dict(type=LoggerHook, log_metric_by_epoch=False, interval=10),
+    # enable the parameter scheduler.
+    param_scheduler=dict(type=ParamSchedulerHook),
+    # save checkpoint per `save_steps`.
+    checkpoint=dict(
+        type=CheckpointHook,
+        save_optimizer=False,
+        by_epoch=False,
+        interval=save_steps,
+        max_keep_ckpts=save_total_limit),
+    # set sampler seed in distributed evrionment.
+    sampler_seed=dict(type=DistSamplerSeedHook),
+)
+
+# configure environment
+env_cfg = dict(
+    # whether to enable cudnn benchmark
+    cudnn_benchmark=False,
+    # set multi process parameters
+    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
+    # set distributed parameters
+    dist_cfg=dict(backend='nccl'),
+)
+
+# set visualizer
+visualizer = None
+
+# set log level
+log_level = 'INFO'
+
+# load from which checkpoint
+load_from = None
+
+# whether to resume training from the loaded checkpoint
+resume = False
+
+# Defaults to use random seed and disable `deterministic`
+randomness = dict(seed=None, deterministic=False)
+
+# set log processor
+log_processor = dict(by_epoch=False)
+```
+
+
+
+```shell
+# 开始训练
+cd XTuner
+
+NPROC_PER_NODE=1 xtuner train /root/InternLM/code/XTuner/xtuner/configs/internvl/v2/internvl_v2_internlm2_2b_qlora_finetune.py  --work-dir /root/InternLM/work_dir/internvl_ft_run_8_filter  --deepspeed deepspeed_zero1
+
+# 合并权重
+cd XTuner
+# transfer weights
+python3 xtuner/configs/internvl/v1_5/convert_to_official.py xtuner/configs/internvl/v2/internvl_v2_internlm2_2b_qlora_finetune.py /root/InternLM/work_dir/internvl_ft_run_8_filter/iter_3000.pth /root/InternLM/InternVL2-2B/
+```
+
+训练效果：
+
+![img](./image/59.png)
+
+
+
+internVL2多模态交互的实现就直接开始动手哈，我会在比较重要的步骤中给出详细的解释说明，有不明白的可以参考之前的文章，也可以直接在群里问，谢谢理解~ 
 
 ```python
 # 首先会创建xtuner虚拟环境，lmdeploy虚拟环境（用于加快推理）
@@ -1030,6 +1371,43 @@ python demo.py
 
 ![img](./image/44.png)
 
+上传至huggingface
+
+```shell
+# 首先去huggingface创建一个space空间，然后在开发机指定目录下拉取仓库
+git clone https://hf-mirror.com/spaces/dstars/InternVL_Foodie
+cd InternVL_Foodie
+cp -r /root/InternVL2-Tutorial/* .
+cp -r /root/liuxin/work_dirs/internvl_v2_internlm2_2b_lora_finetune_food/lr35_ep10 .
+# 获取远程仓库的地址，xxxx可使用“git remote -v”来查看
+git remote set-url XXXX https://dstars:<ACCESS TOKEN>@hf-mirror.com/spaces/dstars/InternVL_Foodie
+# push到远程仓库
+git init
+git add .
+git commit -m "update"
+git push
+```
+
+![img](./image/62.png)
+
+运行error的原因是需要GPU才能执行，然后这里我是免费的hf用户，并没有开通包月，学员们可以自行研究，包月是9美刀。我建议还是直接上传至modelscope魔塔社区。
+
+这里需要注意的是，我们要将demo.py的内容上添加和修改以下内容：
+
+```shell
+# 这里需要先把我们训练后且转换好的模型文件上传至huggingface的model，如下图所示，然后再在执行的脚本代码里面添加下面内容
+os.system('git lfs install')
+os.system("git clone https://huggingface.co/dstars/InternVL_Food")
+# 根据上传的仓库目录，需要重新设置下数据和model的路径
+FOOD_EXAMPLES = "./demo/food_for_demo.json"
+MODEL_PATH = "./InternVL_Food/lr35_ep10"
+OUTPUT_PATH = "./outputs"
+```
+
+
+
+![img](./image/61.png)
+
 
 
 # L2G5000:茴香豆：企业级知识库问答工具
@@ -1136,6 +1514,134 @@ python3 -m huixiangdou.gradio
 
 ![img](./image/53.png)
 
+
+
+多模态的功能：
+
+省流版
+
+```shell
+conda activate huixiangdou
+
+cd huixiangdou 
+git stash # 弃用之前的修改，如果需要保存，可将冲突文件另存为新文件名
+
+git checkout main
+git pull
+git checkout bec2f6af9 # 支持多模态的最低版本
+
+# 设置环境变量
+export HF_ENDPOINT='https://hf-mirror.com' # 使用 huggingface 中国镜像加速下载，如果在国外，忽略此步骤
+
+# 下载模型
+## 模型文件较大，如果遇到下载报错，重新运行命令就好
+huggingface-cli download BAAI/bge-m3 --local-dir /root/models/bge-m3
+huggingface-cli download BAAI/bge-visualized --local-dir /root/models/bge-visualized
+huggingface-cli download BAAI/bge-reranker-v2-minicpm-layerwise --local-dir /root/models/bge-reranker-v2-minicpm-layerwise
+
+# 需要手动将视觉模型移动到 BGE-m3 文件夹下
+mv /root/models/bge-visualized/Visualized_m3.pth /root/models/bge-m3/
+
+# 安装最新的 FlagEmbedding
+conda activate huixiangdou
+cd /root/
+
+# 从官方 github 安装最新版
+git clone https://github.com/FlagOpen/FlagEmbedding.git
+cd FlagEmbedding
+pip install  .
+
+# 复制 FlagEmbedding 缺失的文件，注意 huixiangdou/lib/python3.10/site-packages 是教程开始设置的环境，如果个人有更改，需要根据自己的环境重新填入对应的地址
+cp -r ~/FlagEmbedding/FlagEmbedding/visual/eva_clip/model_configs /root/.conda/envs/huixiangdou/lib/python3.10/site-packages/FlagEmbedding/visual/eva_clip/
+
+cp ~/FlagEmbedding/FlagEmbedding/visual/eva_clip/bpe_simple_vocab_16e6.txt.gz /root/.conda/envs/huixiangdou/lib/python3.10/site-packages/FlagEmbedding/visual/eva_clip/
+
+# 其他依赖包
+pip install timm ftfy peft 
+
+# 修改配置文件，或者去手动修改
+
+sed -i '6s#.*#embedding_model_path = "/root/models/bge-m3"#' /root/huixiangdou/config-multimodal.ini
+sed -i '7s#.*#reranker_model_path = "/root/models/bge-reranker-v2-minicpm-layerwise"#' /root/huixiangdou/config-multimodal.ini
+sed -i '31s#.*#local_llm_path = "/root/models/internlm2-chat-7b"#' /root/huixiangdou/config-multimodal.ini
+sed -i '20s#.*#enable_local = 1#' /root/huixiangdou/config-multimodal.ini
+sed -i '21s#.*#enable_remote = 0#' /root/huixiangdou/config-multimodal.ini
+sed -i '8s#.*#work_dir = "workdir-multi"#' /root/huixiangdou/config-multimodal.ini
+sed -i '61s#.*#enable_cr = 0#' /root/huixiangdou/config-multimodal.ini # 关闭指代消岐功能
+# 建立多模态知识库
+# 新的向量知识库文件夹
+mkdir workdir-multi
+
+# 提取多模态向量知识库
+python3 -m huixiangdou.service.feature_store --config_path config-multimodal.ini
+# 开启Gradio UI的功能
+conda activate huixiangdou
+cd /root/huixiangdou
+
+python3 -m huixiangdou.gradio --config_path config-multimodal.ini
+```
+
+
+
+![img](./image/54.png)
+
+
+
+可能遇到的问题，就是FlagEmbedding环境问题，需要去下载指定分支的内容Branch：`JUNJIE99-patch-1`，然需要修改`[feature_store]`
+`reject_throttle = 0.3493807432644208`
+`embedding_model_path = "/root/models/bge-m3"`
+`model_name_bge = "BAAI/bge-m3"` # 添加这个
+`reranker_model_path = "/root/models/bge-reranker-v2-minicpm-layerwise"`
+`work_dir = "workdir-multi"`，然后在`huixiangdou/huixiangdou/primitive/embedder.py`修改这个文件，在init初始化中，添加如下：
+
+```python
+class Embedder:
+    """Wrap text2vec (multimodal) model."""
+    client: Any
+    _type: str
+
+    def __init__(self, model_config: dict):
+        self.support_image = False
+        # bce also use euclidean distance.
+        self.distance_strategy = DistanceStrategy.EUCLIDEAN_DISTANCE
+        
+        model_path = model_config['embedding_model_path']
+        model_name_bge = model_config.get("model_name_bge", model_path) # 添加这一行
+        
+        self._type = self.model_type(model_path=model_path)
+        if 'bce' in self._type:
+            from sentence_transformers import SentenceTransformer
+            self.client = SentenceTransformer(model_name_or_path=model_path).half()
+        elif 'bge' in self._type:
+            from FlagEmbedding.visual.modeling import Visualized_BGE
+            self.support_image = True
+            vision_weight_path = os.path.join(model_path, 'Visualized_m3.pth')
+            self.client = Visualized_BGE(
+                model_name_bge=model_name_bge, # 还有这一行
+                model_weight=vision_weight_path).eval()
+        elif 'siliconcloud' in self._type:
+            api_token = model_config['api_token'].strip()
+            if len(api_token) < 1:
+                raise ValueError('siliconclud remote embedder api token is None')
+
+            if 'Bearer' not in api_token:
+                api_token = 'Bearer ' + api_token
+            api_rpm = max(1, int(model_config['api_rpm']))
+            self.client = {
+                'api_token': api_token,
+                'api_rpm': RPM(api_rpm)
+            }
+
+        else:
+            raise ValueError('Unknown type {}'.format(self._type))
+```
+
+
+
+transformers版本是4.47.1，fastapi是0.115.6，gradio是5.9.1，剩下就没什么问题了，上面方法若复杂，直接参考直接 vim 到你机器上的 visual/modeling.py ， 按这个修改调整一下 if   https://github.com/FlagOpen/FlagEmbedding/commit/3f84da0796d5badc3ad519870612f1f18ff0d1d3这个方法。然后运行gradio界面的时候可能会报错：`AttributeError: module 'gradio' has no attribute 'themes'`这个错误我排查了一下午，原来就算是gradio版本支持themes，**也要检查执行的目录和路径上是否存在gradio.py，因为 Python 并没有导入真正的 Gradio 模块，而是导入了你的本地 `gradio.py` 文件**，直接改运行脚本的名字即可。
+
+![img](./image/55.png)
+
 总结：
 
 茴香豆搭建个人企业知识助手还是很好用的，适合企业内部文档的培训学习手册。
@@ -1201,5 +1707,9 @@ git add .
 git commit -m "update"
 git push
 ```
+
+
+
+部署到HuggingFace的截图如下：
 
 ![img](./image/45.png)
